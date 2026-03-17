@@ -1,0 +1,12 @@
+[package]
+name = "tsnet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mio = { version = "1.0", features = ["os-ext"] }
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.71.0"
+cmake = "0.1.57"

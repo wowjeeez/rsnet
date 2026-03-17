@@ -1,0 +1,4 @@
+/target
+
+# AgentOps session artifacts
+.agents/
