@@ -1,51 +1,16 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
 use tracing_subscriber::EnvFilter;
-use tsnet::{ConnectionHandler, FdControl, HandlerFactory, RawTsTcpServer};
+use tsnet::RawTsTcpServer;
 
-const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 38\r\nConnection: close\r\n\r\nHello from Rust + Tailscale C FFI API!";
-
-struct HttpHelloHandler {
-    got_request: bool,
-    sent_response: bool,
-}
-
-impl ConnectionHandler for HttpHelloHandler {
-    fn on_connect(&mut self, fd: RawFd) -> FdControl {
-        eprintln!("  connection established (fd={})", fd);
-        FdControl::Keep
-    }
-
-    fn on_data(&mut self, data: &[u8]) {
-        if let Some(line) = std::str::from_utf8(data).ok().and_then(|s| s.lines().next()) {
-            eprintln!("  request: {}", line);
-        }
-        self.got_request = true;
-    }
-
-    fn poll_write(&mut self) -> Option<Vec<u8>> {
-        if self.got_request && !self.sent_response {
-            self.sent_response = true;
-            Some(RESPONSE.to_vec())
-        } else {
-            None
-        }
-    }
-
-    fn is_done(&self) -> bool {
-        self.sent_response
-    }
-}
-
-struct HttpHelloFactory;
-
-impl HandlerFactory for HttpHelloFactory {
-    type Handler = HttpHelloHandler;
-    fn new_handler(&self) -> Self::Handler {
-        HttpHelloHandler {
-            got_request: false,
-            sent_response: false,
-        }
-    }
+async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    Ok(Response::new(Full::new(Bytes::from("Hello from Rust + Tailscale C FFI API!"))))
 }
 
 static mut SIGNAL_WRITE_FD: RawFd = -1;
@@ -56,7 +21,8 @@ extern "C" fn on_signal(_: libc::c_int) {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <auth-key> <hostname> [control-url] [state-dir]", args[0]);
@@ -120,10 +86,9 @@ fn main() {
         }
         Err(e) => eprintln!("[info] could not get IPs: {}", e),
     }
-
     eprintln!("[info] hostname: {}", hostname);
-    server.set_hostname(hostname).expect("failed to re-set hostname");
 
+    // Register signal handler AFTER up() — Go runtime overrides during startup
     let mut pipe_fds = [0i32; 2];
     assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
     let signal_read = unsafe { OwnedFd::from_raw_fd(pipe_fds[0]) };
@@ -132,10 +97,7 @@ fn main() {
 
     eprintln!();
     eprintln!("[listen] starting TCP listener on :80");
-    let listener = server
-        .listen("tcp", ":80", HttpHelloFactory)
-        .expect("failed to listen");
-    eprintln!("[listen] accepting connections on background thread");
+    let listener = server.listen("tcp", ":80").expect("failed to listen");
 
     eprintln!();
     eprintln!("Ready! Try from any device on your tailnet:");
@@ -144,12 +106,35 @@ fn main() {
     eprintln!("Press Ctrl+C to stop.");
     eprintln!();
 
+    // Spawn the accept loop
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok(stream) => {
+                    eprintln!("  connection accepted (fd={})", stream.as_raw_fd());
+                    let io = TokioIo::new(stream);
+                    tokio::spawn(async move {
+                        if let Err(e) = http1::Builder::new()
+                            .serve_connection(io, service_fn(hello))
+                            .await
+                        {
+                            eprintln!("  http error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!("  accept error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Block until ctrl-c
     let mut buf = [0u8; 1];
     unsafe { libc::read(signal_read.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, 1) };
 
     eprintln!();
-    eprintln!("[shutdown] stopping listener...");
-    let _ = listener.shutdown();
     eprintln!("[shutdown] closing server...");
     let _ = server.close();
     eprintln!("[shutdown] done.");
