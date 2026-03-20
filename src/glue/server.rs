@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_int, CStr, CString};
-use std::io;
+use std::io::{self, BufRead};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use mio::unix::SourceFd;
@@ -210,7 +210,33 @@ impl RawTsTcpServer {
         let handle = unsafe { libtailscale::tailscale_new() };
         let s = RawTsTcpServer { handle };
         s.set_hostname(hostname)?;
+        s.capture_logs()?;
         Ok(s)
+    }
+
+    fn capture_logs(&self) -> Result<(), TsNetError> {
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let read_fd = fds[0];
+        let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+        self.set_log_fd(write_fd)?;
+
+        std::thread::spawn(move || {
+            let file = unsafe { std::fs::File::from_raw_fd(read_fd) };
+            let reader = io::BufReader::new(file);
+            for line in reader.lines() {
+                match line {
+                    Ok(msg) if !msg.is_empty() => tracing::debug!(target: "libtailscale", "{msg}"),
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(())
     }
 
     pub fn set_hostname(&self, hostname: &str) -> Result<(), TsNetError> {
