@@ -2,73 +2,116 @@
 
 Rust bindings for Tailscale's [libtailscale](https://github.com/tailscale/libtailscale) C library. Embed a Tailscale node directly into your Rust process — get an IP on your tailnet entirely from userspace, no system daemon required.
 
+Fully async (tokio). Streams implement `AsyncRead + AsyncWrite + Unpin`.
+
 ## Prerequisites
 
 - **Go** (to compile libtailscale from the git submodule)
-- **Rust nightly** (edition 2024)
+- **Rust stable** (edition 2021+)
 - A [Tailscale auth key](https://login.tailscale.com/admin/settings/keys)
 
-After cloning, init the submodule:
-
 ```
-git submodule update --init
+git clone --recurse-submodules <repo-url>
 ```
 
-## Hello example
+## Quick start
 
-A minimal HTTP server that joins your tailnet and responds with `Hello from Rust + tsnet!` to any request.
+```rust
+let mut server = RawTsTcpServer::new("my-node")?;
+server.set_auth_key("tskey-auth-...")?;
+server.set_dir("/var/lib/my-node")?;
+server.up()?;
 
-### Run it
+let listener = server.listen("tcp", ":80")?;
+loop {
+    let stream = listener.accept().await?; // TailscaleStream: AsyncRead + AsyncWrite
+    tokio::spawn(handle_connection(stream));
+}
+```
+
+## Features
+
+| Feature | Default | Adds |
+|---|---|---|
+| `ssl` | yes | `TlsListener`, `listen_tls()`, `listen_tls_with_pem()` via tokio-rustls |
+| `localapi-serde-json` | no | Typed `Status`, `PeerStatus`, `WhoIsResponse` structs, `whoami()`, `fqdn()`, `whois()` |
+
+```toml
+[dependencies]
+tsnet = "0.1"                                    # ssl only (default)
+tsnet = { version = "0.1", features = ["localapi-serde-json"] }  # + typed localapi
+tsnet = { version = "0.1", default-features = false }            # core only
+```
+
+## Examples
+
+### Plain HTTP
 
 ```
 cargo run --example hello -- <auth-key> <hostname>
+curl http://<hostname>.YOUR-TAILNET.ts.net
 ```
 
-- `auth-key` — a Tailscale auth key (`tskey-auth-...`). Generate one from your [admin console](https://login.tailscale.com/admin/settings/keys). Reusable + ephemeral recommended for development.
-- `hostname` — the name this node appears as on your tailnet (e.g. `hello-rust`).
-
-### Test it
-
-From any device on your tailnet:
+### HTTPS with auto TLS
 
 ```
-curl http://hello-rust.YOUR-TAILNET.ts.net
+cargo run --example hello_tls --features localapi-serde-json -- <auth-key> <hostname>
+curl https://<hostname>.YOUR-TAILNET.ts.net
 ```
 
-```
-Hello from Rust + tsnet!
-```
+Fetches LetsEncrypt certs from Tailscale's LocalAPI automatically. First run takes a few seconds for ACME.
 
-The node registers as ephemeral, so it disappears from your tailnet automatically when the process exits.
+## TLS
 
-### How it works
-
-The example implements two traits:
-
-- **`ConnectionHandler`** — called per-connection with `on_data` (incoming bytes) and `poll_write` (outgoing bytes). The hello handler waits for any request data, then returns a hardcoded HTTP response.
-- **`HandlerFactory`** — creates a fresh handler for each accepted connection.
+Three levels of control:
 
 ```rust
-let server = RawTsTcpServer::new("hello-rust")?;
-server.set_auth_key("tskey-auth-...")?;
-server.set_ephemeral(true)?;
-server.up()?;
+// auto: fetches fqdn + certs from localapi, listens on :443
+let tls = server.listen_tls().await?;
 
-let listener = server.listen("tcp", ":80", HttpHelloFactory)?;
-// listener runs on a background thread, drop it to stop
+// manual certs: bring your own PEM
+let tls = server.listen_tls_with_pem("tcp", ":8443", &cert_pem, &key_pem)?;
+
+// full control: build your own rustls config
+let tls = TlsListener::new(listener, my_rustls_server_config);
+
+// all return TlsStream<TailscaleStream> from accept
+let tls_stream = tls.accept().await?;
 ```
 
-`listen()` returns immediately. The accept loop runs on a background thread. Drop the `Listener` or call `listener.shutdown()` to stop it.
+## LocalAPI
+
+Access Tailscale's node-local HTTP API for status, peer info, certs, and more:
+
+```rust
+let client = server.local_client()?;
+
+// raw requests (always available)
+let (status_code, body) = client.get("/localapi/v0/status").await?;
+let cert_pem = client.cert("my-node.tailnet.ts.net").await?;
+let (cert, key) = client.cert_pair("my-node.tailnet.ts.net").await?;
+
+// typed responses (requires localapi-serde-json feature)
+let me = client.whoami().await?;           // PeerStatus
+let domain = client.fqdn().await?;         // String
+let status = client.status().await?;       // Status (with all peers)
+let who = client.whois("100.x.y.z:443").await?; // WhoIsResponse
+```
 
 ## Logging
 
-Go-side logs are automatically piped through the `tracing` crate at `debug` level with target `libtailscale`. To see them:
+Go-side logs are piped through `tracing` at debug level with target `libtailscale`:
 
-```rust
-// Add tracing-subscriber to your dependencies, then:
-tracing_subscriber::fmt()
-    .with_env_filter("libtailscale=debug")
-    .init();
+```
+RUST_LOG=libtailscale=debug cargo run --example hello -- ...
 ```
 
-Or set `RUST_LOG=libtailscale=debug` if using `EnvFilter`.
+## State persistence
+
+Set a state directory to avoid re-authentication on every restart:
+
+```rust
+server.set_dir("/var/lib/my-node")?;
+```
+
+Without this, libtailscale uses a default path keyed by binary name. Combined with `set_ephemeral(true)`, the node is deleted from your tailnet when the process exits and needs re-auth next run.

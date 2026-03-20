@@ -7,6 +7,8 @@ use crate::glue::error::TsNetError;
 use crate::glue::listener::Listener;
 use crate::glue::localapi::LocalClient;
 use crate::glue::stream::TailscaleStream;
+#[cfg(feature = "ssl")]
+use crate::glue::tls::TlsListener;
 
 fn str_to_c(s: &str) -> Result<CString, TsNetError> {
     CString::new(s).map_err(|e| TsNetError::Tailscale(e.to_string()))
@@ -191,6 +193,31 @@ impl RawTsTcpServer {
 
         unsafe { set_nonblocking(listener_fd) }?;
         Ok(Listener::new(listener_fd)?)
+    }
+
+    // fetches certs from localapi automatically and returns a TlsListener on :443
+    #[cfg(all(feature = "ssl", feature = "localapi-serde-json"))]
+    pub async fn listen_tls(&self) -> Result<TlsListener, TsNetError> {
+        let client = self.local_client()?;
+        let domain = client.fqdn().await.map_err(|e| TsNetError::Tailscale(e.to_string()))?;
+        let (cert, key) = client.cert_pair(&domain).await
+            .map_err(|e| TsNetError::Tailscale(e.to_string()))?;
+        let listener = self.listen("tcp", ":443")?;
+        TlsListener::from_pem(listener, &cert, &key)
+            .map_err(|e| TsNetError::Tailscale(e.to_string()))
+    }
+
+    #[cfg(feature = "ssl")]
+    pub fn listen_tls_with_pem(
+        &self,
+        network: &str,
+        addr: &str,
+        cert_pem: &[u8],
+        key_pem: &[u8],
+    ) -> Result<TlsListener, TsNetError> {
+        let listener = self.listen(network, addr)?;
+        TlsListener::from_pem(listener, cert_pem, key_pem)
+            .map_err(|e| TsNetError::Tailscale(e.to_string()))
     }
 
     pub fn dial(&self, network: &str, addr: &str) -> Result<TailscaleStream, TsNetError> {
