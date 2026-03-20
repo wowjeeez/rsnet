@@ -1,2 +1,6 @@
 mod vendor;
-mod glue;
+pub mod glue;
+
+pub use glue::server::{
+    ConnectionHandler, FdControl, HandlerFactory, Listener, RawTsTcpServer, TsNetError,
+};
