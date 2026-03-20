@@ -35,12 +35,14 @@ impl Listener {
             }
 
             let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::WouldBlock {
-                // drop guard so tokio re-arms the readiness notification
-                drop(guard);
-                continue;
+            match err.kind() {
+                // no connection ready yet, or transient timeout on the socketpair
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                    drop(guard);
+                    continue;
+                }
+                _ => return Err(err),
             }
-            return Err(err);
         }
     }
 

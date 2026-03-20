@@ -62,13 +62,15 @@ async fn main() {
     }
 
     if let Some(dir) = state_dir {
-        eprintln!("[config] persisting state to: {}", dir);
         server.set_dir(dir).expect("failed to set state dir");
-        server.set_ephemeral(false).expect("failed to set ephemeral");
-        eprintln!("[config] ephemeral: false (state will persist across restarts)");
+        eprintln!("[config] state dir: {}", dir);
     } else {
-        server.set_ephemeral(true).expect("failed to set ephemeral");
-        eprintln!("[config] ephemeral: true (node removed when process exits)");
+        let default_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("tsnet-rust");
+        std::fs::create_dir_all(&default_dir).expect("failed to create state dir");
+        server.set_dir(default_dir.to_str().unwrap()).expect("failed to set state dir");
+        eprintln!("[config] state dir: {}", default_dir.display());
     }
 
     eprintln!();

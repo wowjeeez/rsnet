@@ -5,6 +5,67 @@ use tokio::net::TcpStream;
 
 use base64::Engine as _;
 
+#[cfg(feature = "localapi-serde-json")]
+use std::collections::HashMap;
+
+#[cfg(feature = "localapi-serde-json")]
+use serde::Deserialize;
+
+#[cfg(feature = "localapi-serde-json")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Status {
+    #[serde(rename = "Self")]
+    pub self_node: PeerStatus,
+    pub peer: Option<HashMap<String, PeerStatus>>,
+    pub current_tailnet: Option<TailnetStatus>,
+}
+
+#[cfg(feature = "localapi-serde-json")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PeerStatus {
+    #[serde(rename = "ID")]
+    pub id: Option<String>,
+    pub public_key: Option<String>,
+    pub host_name: Option<String>,
+    #[serde(rename = "DNSName")]
+    pub dns_name: Option<String>,
+    #[serde(rename = "OS")]
+    pub os: Option<String>,
+    #[serde(rename = "TailscaleIPs")]
+    pub tailscale_ips: Option<Vec<String>>,
+    pub online: Option<bool>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[cfg(feature = "localapi-serde-json")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct TailnetStatus {
+    pub name: Option<String>,
+    pub magic_dns_suffix: Option<String>,
+}
+
+#[cfg(feature = "localapi-serde-json")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct WhoIsResponse {
+    pub node: Option<PeerStatus>,
+    pub user_profile: Option<UserProfile>,
+}
+
+#[cfg(feature = "localapi-serde-json")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct UserProfile {
+    #[serde(rename = "ID")]
+    pub id: Option<u64>,
+    pub login_name: Option<String>,
+    pub display_name: Option<String>,
+    pub profile_pic_url: Option<String>,
+}
+
 pub struct LocalClient {
     addr: String,
     auth_header: String,
@@ -37,27 +98,32 @@ impl LocalClient {
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await?;
 
-        let raw_str = String::from_utf8_lossy(&raw);
-        let (head, body) = raw_str
-            .split_once("\r\n\r\n")
-            .unwrap_or((&raw_str, ""));
+        let header_end = find_header_end(&raw)
+            .ok_or_else(|| io::Error::other("no header/body separator in response"))?;
+        let head = &raw[..header_end];
 
-        let status = head
-            .lines()
-            .next()
+        let status = std::str::from_utf8(head)
+            .ok()
+            .and_then(|s| s.lines().next())
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(0);
 
-        // find the body bytes in the original raw response
-        let header_len = head.len() + 4; // +4 for \r\n\r\n
-        let body_bytes = if header_len <= raw.len() {
-            raw[header_len..].to_vec()
+        let body_start = header_end + 4;
+        let raw_body = if body_start <= raw.len() { &raw[body_start..] } else { &[] as &[u8] };
+
+        let is_chunked = std::str::from_utf8(head)
+            .ok()
+            .map(|h| h.to_ascii_lowercase().contains("transfer-encoding: chunked"))
+            .unwrap_or(false);
+
+        let body = if is_chunked {
+            decode_chunked(raw_body)?
         } else {
-            body.as_bytes().to_vec()
+            raw_body.to_vec()
         };
 
-        Ok((status, body_bytes))
+        Ok((status, body))
     }
 
     pub async fn get(&self, path: &str) -> io::Result<(u16, Vec<u8>)> {
@@ -68,12 +134,41 @@ impl LocalClient {
         self.request("POST", path).await
     }
 
-    pub async fn status(&self) -> io::Result<Vec<u8>> {
+    pub async fn status_raw(&self) -> io::Result<Vec<u8>> {
         let (code, body) = self.get("/localapi/v0/status").await?;
         if code != 200 {
             return Err(io::Error::other(format!("status returned {code}")));
         }
         Ok(body)
+    }
+
+    #[cfg(feature = "localapi-serde-json")]
+    pub async fn status(&self) -> io::Result<Status> {
+        let body = self.status_raw().await?;
+        serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    #[cfg(feature = "localapi-serde-json")]
+    pub async fn whoami(&self) -> io::Result<PeerStatus> {
+        let status = self.status().await?;
+        Ok(status.self_node)
+    }
+
+    #[cfg(feature = "localapi-serde-json")]
+    pub async fn fqdn(&self) -> io::Result<String> {
+        let me = self.whoami().await?;
+        me.dns_name
+            .map(|s| s.trim_end_matches('.').to_string())
+            .ok_or_else(|| io::Error::other("no DNSName in self node"))
+    }
+
+    #[cfg(feature = "localapi-serde-json")]
+    pub async fn whois(&self, addr: &str) -> io::Result<WhoIsResponse> {
+        let (code, body) = self.get(&format!("/localapi/v0/whois?addr={addr}")).await?;
+        if code != 200 {
+            return Err(io::Error::other(format!("whois returned {code}")));
+        }
+        serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
     }
 
     pub async fn cert(&self, domain: &str) -> io::Result<Vec<u8>> {
@@ -86,38 +181,47 @@ impl LocalClient {
         Ok(body)
     }
 
-    pub async fn whoami(&self) -> io::Result<String> {
-        let status = self.status().await?;
-        let json = String::from_utf8_lossy(&status);
-
-        // DISGUSTING string parsing to avoid a serde dep — just extract the "Self":{...} block
-        let self_start = json.find("\"Self\":{")
-            .ok_or_else(|| io::Error::other("no Self key in status response"))?;
-        let obj_start = self_start + "\"Self\":".len();
-        let mut depth = 0;
-        let mut end = obj_start;
-        for (i, c) in json[obj_start..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = obj_start + i + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(json[obj_start..end].to_string())
-    }
-
-    pub async fn whois(&self, addr: &str) -> io::Result<Vec<u8>> {
-        let (code, body) = self.get(&format!("/localapi/v0/whois?addr={addr}")).await?;
+    pub async fn cert_key(&self, domain: &str) -> io::Result<Vec<u8>> {
+        let (code, body) = self.get(&format!("/localapi/v0/cert/{domain}?type=key")).await?;
         if code != 200 {
-            return Err(io::Error::other(format!("whois returned {code}")));
+            return Err(io::Error::other(
+                format!("cert key returned {code}: {}", String::from_utf8_lossy(&body)),
+            ));
         }
         Ok(body)
     }
+
+    pub async fn cert_pair(&self, domain: &str) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        let cert = self.cert(domain).await?;
+        let key = self.cert_key(domain).await?;
+        Ok((cert, key))
+    }
+}
+
+fn find_header_end(raw: &[u8]) -> Option<usize> {
+    raw.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn decode_chunked(mut data: &[u8]) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = data.windows(2).position(|w| w == b"\r\n")
+            .ok_or_else(|| io::Error::other("malformed chunk: no CRLF after size"))?;
+        let size_str = std::str::from_utf8(&data[..line_end])
+            .map_err(|e| io::Error::other(e.to_string()))?
+            .trim();
+        let chunk_size = usize::from_str_radix(size_str, 16)
+            .map_err(|e| io::Error::other(format!("bad chunk size '{size_str}': {e}")))?;
+        if chunk_size == 0 {
+            break;
+        }
+        let chunk_start = line_end + 2;
+        let chunk_end = chunk_start + chunk_size;
+        if chunk_end > data.len() {
+            return Err(io::Error::other("chunk size exceeds available data"));
+        }
+        out.extend_from_slice(&data[chunk_start..chunk_end]);
+        data = &data[chunk_end + 2..];
+    }
+    Ok(out)
 }
