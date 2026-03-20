@@ -5,6 +5,7 @@ use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::vendor::libtailscale;
 use crate::glue::error::TsNetError;
 use crate::glue::listener::Listener;
+use crate::glue::localapi::LocalClient;
 use crate::glue::stream::TailscaleStream;
 
 fn str_to_c(s: &str) -> Result<CString, TsNetError> {
@@ -151,6 +152,12 @@ impl RawTsTcpServer {
             libtailscale::tailscale_enable_funnel_to_localhost_plaintext_http1,
             localhost_port as c_int
         )
+    }
+
+    // starts the loopback server and returns a client authed to the localapi
+    pub fn local_client(&self) -> Result<LocalClient, TsNetError> {
+        let (addr, _proxy_cred, local_api_cred) = self.loopback()?;
+        Ok(LocalClient::new(addr, local_api_cred))
     }
 
     pub fn close(&mut self) -> Result<(), TsNetError> {
