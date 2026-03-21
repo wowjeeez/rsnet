@@ -1,5 +1,7 @@
 /target
 /vendored
+.idea/
+docs/
 
 # AgentOps session artifacts
 .agents/
