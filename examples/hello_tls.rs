@@ -7,7 +7,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tracing_subscriber::EnvFilter;
-use tsnet::RawTsTcpServer;
+use rsnet::RawTsTcpServer;
 
 async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     Ok(Response::new(Full::new(Bytes::from("Hello from Rust + Tailscale TLS!"))))
@@ -44,7 +44,7 @@ async fn main() {
 
     let state_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("tsnet-rust");
+        .join("rsnet");
     std::fs::create_dir_all(&state_dir).expect("failed to create state dir");
     server.set_dir(state_dir.to_str().unwrap()).expect("failed to set state dir");
 

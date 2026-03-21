@@ -519,6 +519,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsnet"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bindgen",
+ "dirs",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -784,26 +804,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "tsnet"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bindgen",
- "dirs",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

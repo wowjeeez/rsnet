@@ -1,4 +1,4 @@
-# tsnet
+# rsnet
 
 Rust bindings for Tailscale's [libtailscale](https://github.com/tailscale/libtailscale) C library. Embed a Tailscale node directly into your Rust process — get an IP on your tailnet entirely from userspace, no system daemon required.
 
@@ -38,9 +38,9 @@ loop {
 
 ```toml
 [dependencies]
-tsnet = "0.1"                                    # ssl only (default)
-tsnet = { version = "0.1", features = ["localapi-serde-json"] }  # + typed localapi
-tsnet = { version = "0.1", default-features = false }            # core only
+rsnet = "0.1"                                    # ssl only (default)
+rsnet = { version = "0.1", features = ["localapi-serde-json"] }  # + typed localapi
+rsnet = { version = "0.1", default-features = false }            # core only
 ```
 
 ## Examples

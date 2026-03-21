@@ -1,5 +1,5 @@
 [package]
-name = "tsnet"
+name = "rsnet"
 version = "0.1.0"
 edition = "2021"
 description = "Async Rust bindings for Tailscale's libtailscale C library"

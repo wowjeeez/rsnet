@@ -7,7 +7,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tracing_subscriber::EnvFilter;
-use tsnet::RawTsTcpServer;
+use rsnet::RawTsTcpServer;
 
 async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     Ok(Response::new(Full::new(Bytes::from("Hello from Rust + Tailscale C FFI API!"))))
@@ -45,7 +45,7 @@ async fn main() {
     let control_url = args.get(3).map(|s| s.as_str());
     let state_dir = args.get(4).map(|s| s.as_str());
 
-    eprintln!("=== tsnet hello example ===");
+    eprintln!("=== rsnet hello example ===");
     eprintln!();
 
     eprintln!("[config] creating server with hostname '{}'", hostname);
@@ -67,7 +67,7 @@ async fn main() {
     } else {
         let default_dir = dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("tsnet-rust");
+            .join("rsnet");
         std::fs::create_dir_all(&default_dir).expect("failed to create state dir");
         server.set_dir(default_dir.to_str().unwrap()).expect("failed to set state dir");
         eprintln!("[config] state dir: {}", default_dir.display());
