@@ -113,7 +113,11 @@ async fn main() {
         loop {
             match listener.accept().await {
                 Ok(stream) => {
-                    eprintln!("  connection accepted (fd={})", stream.as_raw_fd());
+                    eprintln!("  connection from {} on port {} (fd={})",
+                        stream.peer_addr().unwrap_or("unknown"),
+                        stream.local_port().map(|p| p.to_string()).unwrap_or("?".into()),
+                        stream.as_raw_fd(),
+                    );
                     let io = TokioIo::new(stream);
                     tokio::spawn(async move {
                         if let Err(e) = http1::Builder::new()

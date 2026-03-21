@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use serde::Deserialize;
 
-// --- /localapi/v0/status ---
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Status {
@@ -119,8 +117,6 @@ pub struct Location {
     pub priority: Option<i32>,
 }
 
-// --- /localapi/v0/whois ---
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct WhoIsResponse {
@@ -177,8 +173,6 @@ pub struct Node {
     pub is_wire_guard_only: Option<bool>,
     pub is_jailed: Option<bool>,
 }
-
-// --- /localapi/v0/prefs ---
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]

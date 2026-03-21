@@ -6,7 +6,14 @@ use crate::vendor::libtailscale;
 use crate::glue::error::TsNetError;
 use crate::glue::listener::Listener;
 use crate::glue::localapi::LocalClient;
+use crate::glue::service::ServiceBuilder;
 use crate::glue::stream::TailscaleStream;
+
+fn parse_port(addr: &str) -> Option<u16> {
+    addr.rsplit(':').next()
+        .or(Some(addr))
+        .and_then(|s| s.parse().ok())
+}
 
 fn str_to_c(s: &str) -> Result<CString, TsNetError> {
     CString::new(s).map_err(|e| TsNetError::Tailscale(e.to_string()))
@@ -55,7 +62,6 @@ impl RawTsTcpServer {
         Ok(s)
     }
 
-    // pipe go-side logs through tracing::debug via a reader thread
     fn capture_logs(&self) -> Result<(), TsNetError> {
         let mut fds = [0i32; 2];
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -154,7 +160,6 @@ impl RawTsTcpServer {
         )
     }
 
-    // starts the loopback server and returns a client authed to the localapi
     pub fn local_client(&self) -> Result<LocalClient, TsNetError> {
         let (addr, _proxy_cred, local_api_cred) = self.loopback()?;
         Ok(LocalClient::new(addr, local_api_cred))
@@ -190,11 +195,12 @@ impl RawTsTcpServer {
         }
 
         unsafe { set_nonblocking(listener_fd) }?;
-        Ok(Listener::new(listener_fd)?)
+        match parse_port(addr) {
+            Some(p) => Ok(Listener::new_with_port(listener_fd, p)?),
+            None => Ok(Listener::new(listener_fd)?),
+        }
     }
 
-    // native tls listener — go handles certs automatically via tailscale ACME
-    // the returned fd is already tls-terminated, no rustls needed
     pub fn listen_native_tls(&self, network: &str, addr: &str) -> Result<Listener, TsNetError> {
         let network_c = str_to_c(network)?;
         let addr_c = str_to_c(addr)?;
@@ -210,10 +216,12 @@ impl RawTsTcpServer {
         }
 
         unsafe { set_nonblocking(listener_fd) }?;
-        Ok(Listener::new(listener_fd)?)
+        match parse_port(addr) {
+            Some(p) => Ok(Listener::new_with_port(listener_fd, p)?),
+            None => Ok(Listener::new(listener_fd)?),
+        }
     }
 
-    // tailscale services — advertises as a named service, returns listener + fqdn
     pub fn listen_service(
         &self,
         service_name: &str,
@@ -250,7 +258,11 @@ impl RawTsTcpServer {
                 .to_string_lossy()
                 .into_owned()
         };
-        Ok((Listener::new(listener_fd)?, fqdn))
+        Ok((Listener::new_with_port(listener_fd, port)?, fqdn))
+    }
+
+    pub fn service(&self, name: &str) -> ServiceBuilder<'_> {
+        ServiceBuilder::new(self, name)
     }
 
     pub fn dial(&self, network: &str, addr: &str) -> Result<TailscaleStream, TsNetError> {

@@ -4,9 +4,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use base64::Engine as _;
+use serde::Serialize;
 
-#[cfg(feature = "localapi-serde-json")]
 use crate::glue::types::*;
+
+#[derive(Serialize)]
+struct PrefsPatch {
+    #[serde(rename = "AdvertiseTags", skip_serializing_if = "Option::is_none")]
+    advertise_tags: Option<Vec<String>>,
+    #[serde(rename = "AdvertiseRoutes", skip_serializing_if = "Option::is_none")]
+    advertise_routes: Option<Vec<String>>,
+}
 
 pub struct LocalClient {
     addr: String,
@@ -23,19 +31,28 @@ impl LocalClient {
         }
     }
 
-    async fn request(&self, method: &str, path: &str) -> io::Result<(u16, Vec<u8>)> {
+    async fn request(&self, method: &str, path: &str, body: Option<&[u8]>) -> io::Result<(u16, Vec<u8>)> {
         let mut stream = TcpStream::connect(&self.addr).await?;
+
+        let content_headers = match body {
+            Some(b) => format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len()),
+            None => String::new(),
+        };
 
         let req = format!(
             "{method} {path} HTTP/1.1\r\n\
              Host: {}\r\n\
-             t\r\n\
+             Sec-Tailscale: localapi\r\n\
              Authorization: {}\r\n\
+             {content_headers}\
              Connection: close\r\n\
              \r\n",
             self.addr, self.auth_header,
         );
         stream.write_all(req.as_bytes()).await?;
+        if let Some(b) = body {
+            stream.write_all(b).await?;
+        }
 
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await?;
@@ -59,64 +76,16 @@ impl LocalClient {
             .map(|h| h.to_ascii_lowercase().contains("transfer-encoding: chunked"))
             .unwrap_or(false);
 
-        let body = if is_chunked {
-            decode_chunked(raw_body)?
-        } else {
-            raw_body.to_vec()
-        };
-
-        Ok((status, body))
-    }
-
-    async fn post_body(&self, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
-        let mut stream = TcpStream::connect(&self.addr).await?;
-
-        let req = format!(
-            "POST {path} HTTP/1.1\r\n\
-             Host: {}\r\n\
-             Sec-Tailscale: localapi\r\n\
-             Authorization: {}\r\n\
-             Content-Type: application/json\r\n\
-             Content-Length: {}\r\n\
-             Connection: close\r\n\
-             \r\n",
-            self.addr, self.auth_header, body.len(),
-        );
-        stream.write_all(req.as_bytes()).await?;
-        stream.write_all(body).await?;
-
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).await?;
-
-        let header_end = find_header_end(&raw)
-            .ok_or_else(|| io::Error::other("no header/body separator"))?;
-        let head = &raw[..header_end];
-
-        let status = std::str::from_utf8(head)
-            .ok()
-            .and_then(|s| s.lines().next())
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(0);
-
-        let body_start = header_end + 4;
-        let raw_body = if body_start <= raw.len() { &raw[body_start..] } else { &[] as &[u8] };
-
-        let is_chunked = std::str::from_utf8(head)
-            .ok()
-            .map(|h| h.to_ascii_lowercase().contains("transfer-encoding: chunked"))
-            .unwrap_or(false);
-
-        let resp_body = if is_chunked { decode_chunked(raw_body)? } else { raw_body.to_vec() };
-        Ok((status, resp_body))
+        let resp = if is_chunked { decode_chunked(raw_body)? } else { raw_body.to_vec() };
+        Ok((status, resp))
     }
 
     pub async fn get(&self, path: &str) -> io::Result<(u16, Vec<u8>)> {
-        self.request("GET", path).await
+        self.request("GET", path, None).await
     }
 
     pub async fn post(&self, path: &str) -> io::Result<(u16, Vec<u8>)> {
-        self.request("POST", path).await
+        self.request("POST", path, None).await
     }
 
     pub async fn status_raw(&self) -> io::Result<Vec<u8>> {
@@ -127,19 +96,16 @@ impl LocalClient {
         Ok(body)
     }
 
-    #[cfg(feature = "localapi-serde-json")]
     pub async fn status(&self) -> io::Result<Status> {
         let body = self.status_raw().await?;
         serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
     }
 
-    #[cfg(feature = "localapi-serde-json")]
     pub async fn whoami(&self) -> io::Result<PeerStatus> {
         let status = self.status().await?;
         Ok(status.self_node)
     }
 
-    #[cfg(feature = "localapi-serde-json")]
     pub async fn fqdn(&self) -> io::Result<String> {
         let me = self.whoami().await?;
         me.dns_name
@@ -147,7 +113,6 @@ impl LocalClient {
             .ok_or_else(|| io::Error::other("no DNSName in self node"))
     }
 
-    #[cfg(feature = "localapi-serde-json")]
     pub async fn whois(&self, addr: &str) -> io::Result<WhoIsResponse> {
         let (code, body) = self.get(&format!("/localapi/v0/whois?addr={addr}")).await?;
         if code != 200 {
@@ -156,13 +121,30 @@ impl LocalClient {
         serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
     }
 
-    #[cfg(feature = "localapi-serde-json")]
     pub async fn prefs(&self) -> io::Result<Prefs> {
         let (code, body) = self.get("/localapi/v0/prefs").await?;
         if code != 200 {
             return Err(io::Error::other(format!("prefs returned {code}")));
         }
         serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    async fn patch_prefs(&self, patch: &PrefsPatch) -> io::Result<()> {
+        let body = serde_json::to_vec(patch).map_err(|e| io::Error::other(e.to_string()))?;
+        let (code, resp) = self.request("PATCH", "/localapi/v0/prefs", Some(&body)).await?;
+        if code != 200 {
+            return Err(io::Error::other(
+                format!("prefs returned {code}: {}", String::from_utf8_lossy(&resp)),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn set_tags(&self, tags: &[&str]) -> io::Result<()> {
+        self.patch_prefs(&PrefsPatch {
+            advertise_tags: Some(tags.iter().map(|t| t.to_string()).collect()),
+            advertise_routes: None,
+        }).await
     }
 
     pub async fn advertise_exit_node(&self) -> io::Result<()> {
@@ -174,17 +156,10 @@ impl LocalClient {
     }
 
     pub async fn advertise_routes(&self, routes: &[&str]) -> io::Result<()> {
-        let routes_json: Vec<String> = routes.iter().map(|r| format!("\"{r}\"")).collect();
-        let body = format!(
-            "{{\"AdvertiseRoutes\":[{}]}}",
-            routes_json.join(",")
-        );
-        let (code, resp) = self.post_body("/localapi/v0/prefs", body.as_bytes()).await?;
-        if code != 200 {
-            return Err(io::Error::other(
-                format!("prefs returned {code}: {}", String::from_utf8_lossy(&resp)),
-            ));
-        }
+        self.patch_prefs(&PrefsPatch {
+            advertise_tags: None,
+            advertise_routes: Some(routes.iter().map(|r| r.to_string()).collect()),
+        }).await?;
         Ok(())
     }
 

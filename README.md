@@ -15,7 +15,7 @@ Fully async (tokio). Streams implement `AsyncRead + AsyncWrite + Unpin`.
 - A [Tailscale auth key](https://login.tailscale.com/admin/settings/keys)
 
 ```
-git clone --recurse-submodules <repo-url>
+git clone --recurse-submodules https://github.com/wowjeeez/rsnet.git
 ```
 
 ## Quick start
@@ -28,78 +28,104 @@ server.up()?;
 
 let listener = server.listen("tcp", ":80")?;
 loop {
-    let stream = listener.accept().await?; // TailscaleStream: AsyncRead + AsyncWrite
+    let stream = listener.accept().await?;
+    println!("peer: {:?}, port: {:?}", stream.peer_addr(), stream.local_port());
     tokio::spawn(handle_connection(stream));
 }
 ```
 
-## Features
-
-| Feature | Default | Adds |
-|---|---|---|
-| `ssl` | yes | `TlsListener`, `listen_tls()`, `listen_tls_with_pem()` via tokio-rustls |
-| `localapi-serde-json` | no | Typed `Status`, `PeerStatus`, `WhoIsResponse` structs, `whoami()`, `fqdn()`, `whois()` |
-
-```toml
-[dependencies]
-rsnet = "0.1"                                    # ssl only (default)
-rsnet = { version = "0.1", features = ["localapi-serde-json"] }  # + typed localapi
-rsnet = { version = "0.1", default-features = false }            # core only
-```
-
-## Examples
-
-### Plain HTTP
-
-```
-cargo run --example hello -- <auth-key> <hostname>
-curl http://<hostname>.YOUR-TAILNET.ts.net
-```
-
-### HTTPS with auto TLS
-
-```
-cargo run --example hello_tls --features localapi-serde-json -- <auth-key> <hostname>
-curl https://<hostname>.YOUR-TAILNET.ts.net
-```
-
-Fetches LetsEncrypt certs from Tailscale's LocalAPI automatically. First run takes a few seconds for ACME.
-
 ## TLS
 
-Three levels of control:
+Go handles TLS + ACME certs natively — no rustls needed:
 
 ```rust
-// auto: fetches fqdn + certs from localapi, listens on :443
-let tls = server.listen_tls().await?;
-
-// manual certs: bring your own PEM
-let tls = server.listen_tls_with_pem("tcp", ":8443", &cert_pem, &key_pem)?;
-
-// full control: build your own rustls config
-let tls = TlsListener::new(listener, my_rustls_server_config);
-
-// all return TlsStream<TailscaleStream> from accept
-let tls_stream = tls.accept().await?;
+let listener = server.listen_native_tls("tcp", ":443")?;
+let stream = listener.accept().await?; // already decrypted
 ```
+
+## Services
+
+Multi-port Tailscale Services with a builder pattern:
+
+```rust
+let mut svc = server.service("svc:my-api")
+    .https(443)
+    .http(80)
+    .tcp(9000)
+    .bind()?;
+
+println!("fqdn: {}", svc.fqdn);
+
+loop {
+    let (port, stream) = svc.accept().await?;
+    tokio::spawn(async move {
+        match port {
+            443 => handle_https(stream).await,
+            80 => handle_http(stream).await,
+            9000 => handle_tcp(stream).await,
+            _ => {}
+        }
+    });
+}
+```
+
+Note: services require a tagged auth key (create in admin console with e.g. `tag:service`).
 
 ## LocalAPI
 
-Access Tailscale's node-local HTTP API for status, peer info, certs, and more:
+Typed access to Tailscale's node-local HTTP API:
 
 ```rust
 let client = server.local_client()?;
 
-// raw requests (always available)
-let (status_code, body) = client.get("/localapi/v0/status").await?;
-let cert_pem = client.cert("my-node.tailnet.ts.net").await?;
+let me = client.whoami().await?;
+let domain = client.fqdn().await?;
+let status = client.status().await?;
+let who = client.whois("100.x.y.z:443").await?;
+let prefs = client.prefs().await?;
+
 let (cert, key) = client.cert_pair("my-node.tailnet.ts.net").await?;
 
-// typed responses (requires localapi-serde-json feature)
-let me = client.whoami().await?;           // PeerStatus
-let domain = client.fqdn().await?;         // String
-let status = client.status().await?;       // Status (with all peers)
-let who = client.whois("100.x.y.z:443").await?; // WhoIsResponse
+client.advertise_exit_node().await?;
+client.advertise_routes(&["10.0.0.0/8"]).await?;
+client.set_tags(&["tag:server"]).await?;
+
+let (code, body) = client.get("/localapi/v0/status").await?;
+```
+
+## Stream API
+
+`TailscaleStream` mirrors `tokio::TcpStream`:
+
+```rust
+let stream = listener.accept().await?;
+
+stream.peer_addr()              // Option<&str>
+stream.local_port()             // Option<u16>
+stream.readable().await?;       // wait for readable
+stream.writable().await?;       // wait for writable
+stream.try_read(&mut buf)?;     // non-blocking
+stream.try_write(b"hello")?;    // non-blocking
+
+// async read/write via AsyncReadExt/AsyncWriteExt
+stream.read_exact(&mut buf).await?;
+stream.write_all(b"hello").await?;
+
+// split for bidirectional
+let (reader, writer) = tokio::io::split(stream);
+```
+
+## Examples
+
+```bash
+# plain HTTP on port 80
+cargo run --example hello -- <auth-key> <hostname>
+
+# HTTPS with native TLS on port 443
+cargo run --example hello_tls -- <auth-key> <hostname>
+
+# multi-port service (requires tagged auth key)
+cargo run --example service -- <auth-key> <hostname> svc:my-api
 ```
 
 ## Logging

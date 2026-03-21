@@ -1,17 +1,8 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
-use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing_subscriber::EnvFilter;
 use rsnet::RawTsTcpServer;
-
-async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
-    Ok(Response::new(Full::new(Bytes::from("Hello from Rust + Tailscale TLS!"))))
-}
 
 static mut SIGNAL_WRITE_FD: RawFd = -1;
 
@@ -24,8 +15,11 @@ extern "C" fn on_signal(_: libc::c_int) {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <auth-key> <hostname> [control-url]", args[0]);
+    if args.len() < 4 {
+        eprintln!("Usage: {} <auth-key> <hostname> <service-name>", args[0]);
+        eprintln!("  auth-key:     Tagged auth key (create with tag:service in admin console)");
+        eprintln!("  hostname:     Name this node appears as on your tailnet");
+        eprintln!("  service-name: Service name (e.g. svc:my-api)");
         std::process::exit(1);
     }
 
@@ -38,6 +32,7 @@ async fn main() {
 
     let auth_key = &args[1];
     let hostname = &args[2];
+    let service_name = &args[3];
 
     let mut server = RawTsTcpServer::new(hostname).expect("failed to create server");
     server.set_auth_key(auth_key).expect("failed to set auth key");
@@ -48,22 +43,23 @@ async fn main() {
     std::fs::create_dir_all(&state_dir).expect("failed to create state dir");
     server.set_dir(state_dir.to_str().unwrap()).expect("failed to set state dir");
 
-    if let Some(url) = args.get(3) {
-        server.set_control_url(url).expect("failed to set control url");
-    }
-
     eprintln!("[startup] connecting to tailnet...");
     server.up().expect("failed to bring server up");
 
     let ips = server.getips().unwrap_or_default();
     eprintln!("[info] IPs: {}", ips);
 
-    // go handles tls + acme certs natively — no rustls needed
-    eprintln!("[tls] starting native TLS listener on :443...");
-    let listener = server.listen_native_tls("tcp", ":443").expect("failed to listen");
-    eprintln!("[tls] ready!");
+    eprintln!("[service] binding {} on ports 80 (http) + 443 (https) + 9000 (tcp)...", service_name);
+    eprintln!("[service] note: auth key must be tagged (e.g. tag:service) for services to work");
+    let mut svc = server.service(service_name)
+        .http(80)
+        .https(443)
+        .tcp(9000)
+        .bind()
+        .expect("failed to bind service");
 
-    // signal handler after up()
+    eprintln!("[service] fqdn: {}", svc.fqdn);
+
     let mut pipe_fds = [0i32; 2];
     assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
     let signal_read = unsafe { OwnedFd::from_raw_fd(pipe_fds[0]) };
@@ -71,31 +67,34 @@ async fn main() {
     unsafe { libc::signal(libc::SIGINT, on_signal as *const () as usize) };
 
     eprintln!();
-    eprintln!("Try: curl https://{}.YOUR-TAILNET.ts.net", hostname);
-    eprintln!("Press Ctrl+C to stop.");
+    eprintln!("Ready! Accepting on all ports. Press Ctrl+C to stop.");
     eprintln!();
 
     tokio::spawn(async move {
         loop {
-            match listener.accept().await {
-                Ok(stream) => {
-                    eprintln!("  tls connection from {} (fd={})",
+            match svc.accept().await {
+                Ok((port, mut stream)) => {
+                    eprintln!("  port={} peer={} fd={}",
+                        port,
                         stream.peer_addr().unwrap_or("unknown"),
                         stream.as_raw_fd(),
                     );
-                    let io = TokioIo::new(stream);
                     tokio::spawn(async move {
-                        if let Err(e) = http1::Builder::new()
-                            .serve_connection(io, service_fn(hello))
-                            .await
-                        {
-                            eprintln!("  http error: {}", e);
+                        let mut buf = vec![0u8; 4096];
+                        match stream.read(&mut buf).await {
+                            Ok(n) if n > 0 => {
+                                let response = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nHello from port {port}!\n"
+                                );
+                                let _ = stream.write_all(response.as_bytes()).await;
+                            }
+                            _ => {}
                         }
                     });
                 }
                 Err(e) => {
                     eprintln!("  accept error: {}", e);
-                    continue;
+                    break;
                 }
             }
         }
