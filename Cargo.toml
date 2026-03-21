@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Async Rust bindings for Tailscale's libtailscale C library"
 license = "MIT"
-repository = "https://github.com/levander/tsnet"
+repository = "https://github.com/wowjeeez/rsnet"
+homepage = "https://github.com/wowjeeez/rsnet"
+keywords = ["tailscale", "vpn", "networking", "async", "ffi"]
+categories = ["network-programming", "api-bindings", "asynchronous"]
+readme = "README.md"
 include = [
     "src/**/*",
     "build.rs",
@@ -51,3 +55,6 @@ required-features = ["ssl", "localapi-serde-json"]
 
 [build-dependencies]
 bindgen = "0.71.0"
+
+[package.metadata.docs.rs]
+all-features = true
