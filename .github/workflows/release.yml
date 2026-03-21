@@ -52,9 +52,14 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "1"
         run: |
-          mkdir -p vendored/${{ matrix.goos }}-${{ matrix.goarch }}
+          OUT="vendored/${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "$OUT"
           cd libtailscale
-          go build -buildmode=c-archive -o ../vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.a .
+          go build -buildmode=c-archive -o "../$OUT/libtailscale.a" .
+          # compile the C wrapper and merge into the archive
+          cc -c -I. tailscale.c -o "../$OUT/tailscale_c.o"
+          ar rcs "../$OUT/libtailscale.a" "../$OUT/tailscale_c.o"
+          rm "../$OUT/tailscale_c.o"
 
       - name: install bindgen-cli
         run: which bindgen || cargo install bindgen-cli

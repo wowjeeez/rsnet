@@ -58,9 +58,9 @@ async fn main() {
     let ips = server.getips().unwrap_or_default();
     eprintln!("[info] IPs: {}", ips);
 
-    // one call: fetches fqdn + certs from localapi, listens on :443
-    eprintln!("[tls] setting up TLS listener...");
-    let tls_listener = server.listen_tls().await.expect("failed to start TLS listener");
+    // go handles tls + acme certs natively — no rustls needed
+    eprintln!("[tls] starting native TLS listener on :443...");
+    let listener = server.listen_native_tls("tcp", ":443").expect("failed to listen");
     eprintln!("[tls] ready!");
 
     // signal handler after up()
@@ -77,10 +77,10 @@ async fn main() {
 
     tokio::spawn(async move {
         loop {
-            match tls_listener.accept().await {
-                Ok(tls_stream) => {
-                    eprintln!("  tls connection accepted");
-                    let io = TokioIo::new(tls_stream);
+            match listener.accept().await {
+                Ok(stream) => {
+                    eprintln!("  connection accepted (fd={})", stream.as_raw_fd());
+                    let io = TokioIo::new(stream);
                     tokio::spawn(async move {
                         if let Err(e) = http1::Builder::new()
                             .serve_connection(io, service_fn(hello))

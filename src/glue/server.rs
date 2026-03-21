@@ -7,8 +7,6 @@ use crate::glue::error::TsNetError;
 use crate::glue::listener::Listener;
 use crate::glue::localapi::LocalClient;
 use crate::glue::stream::TailscaleStream;
-#[cfg(feature = "ssl")]
-use crate::glue::tls::TlsListener;
 
 fn str_to_c(s: &str) -> Result<CString, TsNetError> {
     CString::new(s).map_err(|e| TsNetError::Tailscale(e.to_string()))
@@ -195,29 +193,64 @@ impl RawTsTcpServer {
         Ok(Listener::new(listener_fd)?)
     }
 
-    // fetches certs from localapi automatically and returns a TlsListener on :443
-    #[cfg(all(feature = "ssl", feature = "localapi-serde-json"))]
-    pub async fn listen_tls(&self) -> Result<TlsListener, TsNetError> {
-        let client = self.local_client()?;
-        let domain = client.fqdn().await.map_err(|e| TsNetError::Tailscale(e.to_string()))?;
-        let (cert, key) = client.cert_pair(&domain).await
-            .map_err(|e| TsNetError::Tailscale(e.to_string()))?;
-        let listener = self.listen("tcp", ":443")?;
-        TlsListener::from_pem(listener, &cert, &key)
-            .map_err(|e| TsNetError::Tailscale(e.to_string()))
+    // native tls listener — go handles certs automatically via tailscale ACME
+    // the returned fd is already tls-terminated, no rustls needed
+    pub fn listen_native_tls(&self, network: &str, addr: &str) -> Result<Listener, TsNetError> {
+        let network_c = str_to_c(network)?;
+        let addr_c = str_to_c(addr)?;
+
+        let mut listener_fd: c_int = 0;
+        let err = unsafe {
+            libtailscale::tailscale_listen_tls(
+                self.handle, network_c.as_ptr(), addr_c.as_ptr(), &mut listener_fd,
+            )
+        };
+        if err != 0 {
+            return Err(read_error_for(self.handle));
+        }
+
+        unsafe { set_nonblocking(listener_fd) }?;
+        Ok(Listener::new(listener_fd)?)
     }
 
-    #[cfg(feature = "ssl")]
-    pub fn listen_tls_with_pem(
+    // tailscale services — advertises as a named service, returns listener + fqdn
+    pub fn listen_service(
         &self,
-        network: &str,
-        addr: &str,
-        cert_pem: &[u8],
-        key_pem: &[u8],
-    ) -> Result<TlsListener, TsNetError> {
-        let listener = self.listen(network, addr)?;
-        TlsListener::from_pem(listener, cert_pem, key_pem)
-            .map_err(|e| TsNetError::Tailscale(e.to_string()))
+        service_name: &str,
+        service_mode: &str,
+        port: u16,
+        https: bool,
+        terminate_tls: bool,
+    ) -> Result<(Listener, String), TsNetError> {
+        let name_c = str_to_c(service_name)?;
+        let mode_c = str_to_c(service_mode)?;
+
+        let mut listener_fd: c_int = 0;
+        let mut fqdn_buf = [0i8; 256];
+        let err = unsafe {
+            libtailscale::tailscale_listen_service(
+                self.handle,
+                name_c.as_ptr(),
+                mode_c.as_ptr(),
+                port as c_int,
+                c_int::from(https),
+                c_int::from(terminate_tls),
+                &mut listener_fd,
+                fqdn_buf.as_mut_ptr(),
+                fqdn_buf.len(),
+            )
+        };
+        if err != 0 {
+            return Err(read_error_for(self.handle));
+        }
+
+        unsafe { set_nonblocking(listener_fd) }?;
+        let fqdn = unsafe {
+            std::ffi::CStr::from_ptr(fqdn_buf.as_ptr())
+                .to_string_lossy()
+                .into_owned()
+        };
+        Ok((Listener::new(listener_fd)?, fqdn))
     }
 
     pub fn dial(&self, network: &str, addr: &str) -> Result<TailscaleStream, TsNetError> {
