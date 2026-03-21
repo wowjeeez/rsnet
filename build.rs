@@ -1,14 +1,29 @@
 use std::env;
 use std::path::PathBuf;
 
+fn go_os(rust_os: &str) -> &str {
+    match rust_os {
+        "macos" => "darwin",
+        other => other,
+    }
+}
+
+fn go_arch(rust_arch: &str) -> &str {
+    match rust_arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let libtailscale_dir = manifest_dir.join("libtailscale");
     let vendored_dir = manifest_dir.join("vendored");
 
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let platform_dir = vendored_dir.join(format!("{target_os}-{target_arch}"));
+    let rust_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let rust_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let platform_dir = vendored_dir.join(format!("{}-{}", go_os(&rust_os), go_arch(&rust_arch)));
 
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -19,7 +34,7 @@ fn main() {
     if vendored_archive.exists() && vendored_bindings.exists() {
         println!("cargo:rustc-link-search=native={}", platform_dir.display());
         println!("cargo:rustc-link-lib=static=tailscale");
-        link_system_libs(&target_os);
+        link_system_libs(&rust_os);
 
         let out_path = manifest_dir.join("src/vendor/libtailscale.rs");
         std::fs::copy(&vendored_bindings, &out_path).expect("failed to copy vendored bindings");
@@ -44,7 +59,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", libtailscale_dir.display());
     println!("cargo:rustc-link-lib=static=tailscale");
-    link_system_libs(&target_os);
+    link_system_libs(&rust_os);
 
     let bindings = bindgen::Builder::default()
         .header(libtailscale_dir.join("tailscale.h").to_str().unwrap())

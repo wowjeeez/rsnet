@@ -61,6 +61,7 @@ jobs:
   test:
     needs: vendor
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
