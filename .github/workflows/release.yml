@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  vendor:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: macos-13
+            goos: darwin
+            goarch: amd64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: libtailscale/go.sum
+
+      - name: build vendored archive (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd libtailscale
+          go build -buildmode=c-archive -o ../vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.a .
+
+      - name: build vendored archive (windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd libtailscale
+          go build -buildmode=c-archive -o ../vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.lib .
+
+      - name: install bindgen-cli
+        run: cargo install bindgen-cli
+
+      - name: generate bindings
+        run: bindgen libtailscale/tailscale.h > vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.rs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendored-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: vendored/${{ matrix.goos }}-${{ matrix.goarch }}/
+
+  test:
+    needs: vendor
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vendored-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: vendored/${{ matrix.goos }}-${{ matrix.goarch }}/
+
+      - name: cargo test
+        run: cargo test --all-features
+
+      - name: cargo clippy
+        run: cargo clippy --all-features -- -D warnings
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: download all vendored artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vendored-*
+
+      - name: organize vendored artifacts
+        run: |
+          mkdir -p vendored
+          for dir in vendored-*/; do
+            platform="${dir#vendored-}"
+            platform="${platform%/}"
+            mv "$dir" "vendored/$platform"
+          done
+          echo "vendored contents:"
+          find vendored -type f
+
+      - name: verify all platforms
+        run: |
+          for p in linux-amd64 linux-arm64 darwin-arm64 darwin-amd64; do
+            test -f "vendored/$p/libtailscale.a" || { echo "missing $p archive"; exit 1; }
+            test -f "vendored/$p/libtailscale.rs" || { echo "missing $p bindings"; exit 1; }
+          done
+          test -f "vendored/windows-amd64/libtailscale.lib" || { echo "missing windows archive"; exit 1; }
+          test -f "vendored/windows-amd64/libtailscale.rs" || { echo "missing windows bindings"; exit 1; }
+          echo "all platforms verified"
+
+      - name: publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --allow-dirty
+
+      - name: create github release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            vendored/linux-amd64/libtailscale.a#libtailscale-linux-amd64.a \
+            vendored/linux-arm64/libtailscale.a#libtailscale-linux-arm64.a \
+            vendored/darwin-arm64/libtailscale.a#libtailscale-darwin-arm64.a \
+            vendored/darwin-amd64/libtailscale.a#libtailscale-darwin-amd64.a \
+            vendored/windows-amd64/libtailscale.lib#libtailscale-windows-amd64.lib

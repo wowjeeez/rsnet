@@ -1,4 +1,5 @@
 /target
+/vendored
 
 # AgentOps session artifacts
 .agents/

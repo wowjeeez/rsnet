@@ -6,65 +6,7 @@ use tokio::net::TcpStream;
 use base64::Engine as _;
 
 #[cfg(feature = "localapi-serde-json")]
-use std::collections::HashMap;
-
-#[cfg(feature = "localapi-serde-json")]
-use serde::Deserialize;
-
-#[cfg(feature = "localapi-serde-json")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct Status {
-    #[serde(rename = "Self")]
-    pub self_node: PeerStatus,
-    pub peer: Option<HashMap<String, PeerStatus>>,
-    pub current_tailnet: Option<TailnetStatus>,
-}
-
-#[cfg(feature = "localapi-serde-json")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct PeerStatus {
-    #[serde(rename = "ID")]
-    pub id: Option<String>,
-    pub public_key: Option<String>,
-    pub host_name: Option<String>,
-    #[serde(rename = "DNSName")]
-    pub dns_name: Option<String>,
-    #[serde(rename = "OS")]
-    pub os: Option<String>,
-    #[serde(rename = "TailscaleIPs")]
-    pub tailscale_ips: Option<Vec<String>>,
-    pub online: Option<bool>,
-    pub tags: Option<Vec<String>>,
-}
-
-#[cfg(feature = "localapi-serde-json")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct TailnetStatus {
-    pub name: Option<String>,
-    pub magic_dns_suffix: Option<String>,
-}
-
-#[cfg(feature = "localapi-serde-json")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct WhoIsResponse {
-    pub node: Option<PeerStatus>,
-    pub user_profile: Option<UserProfile>,
-}
-
-#[cfg(feature = "localapi-serde-json")]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub struct UserProfile {
-    #[serde(rename = "ID")]
-    pub id: Option<u64>,
-    pub login_name: Option<String>,
-    pub display_name: Option<String>,
-    pub profile_pic_url: Option<String>,
-}
+use crate::glue::types::*;
 
 pub struct LocalClient {
     addr: String,
@@ -87,7 +29,7 @@ impl LocalClient {
         let req = format!(
             "{method} {path} HTTP/1.1\r\n\
              Host: {}\r\n\
-             Sec-Tailscale: localapi\r\n\
+             t\r\n\
              Authorization: {}\r\n\
              Connection: close\r\n\
              \r\n",
@@ -124,6 +66,49 @@ impl LocalClient {
         };
 
         Ok((status, body))
+    }
+
+    async fn post_body(&self, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
+        let mut stream = TcpStream::connect(&self.addr).await?;
+
+        let req = format!(
+            "POST {path} HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Sec-Tailscale: localapi\r\n\
+             Authorization: {}\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n",
+            self.addr, self.auth_header, body.len(),
+        );
+        stream.write_all(req.as_bytes()).await?;
+        stream.write_all(body).await?;
+
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+
+        let header_end = find_header_end(&raw)
+            .ok_or_else(|| io::Error::other("no header/body separator"))?;
+        let head = &raw[..header_end];
+
+        let status = std::str::from_utf8(head)
+            .ok()
+            .and_then(|s| s.lines().next())
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        let body_start = header_end + 4;
+        let raw_body = if body_start <= raw.len() { &raw[body_start..] } else { &[] as &[u8] };
+
+        let is_chunked = std::str::from_utf8(head)
+            .ok()
+            .map(|h| h.to_ascii_lowercase().contains("transfer-encoding: chunked"))
+            .unwrap_or(false);
+
+        let resp_body = if is_chunked { decode_chunked(raw_body)? } else { raw_body.to_vec() };
+        Ok((status, resp_body))
     }
 
     pub async fn get(&self, path: &str) -> io::Result<(u16, Vec<u8>)> {
@@ -169,6 +154,60 @@ impl LocalClient {
             return Err(io::Error::other(format!("whois returned {code}")));
         }
         serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    #[cfg(feature = "localapi-serde-json")]
+    pub async fn prefs(&self) -> io::Result<Prefs> {
+        let (code, body) = self.get("/localapi/v0/prefs").await?;
+        if code != 200 {
+            return Err(io::Error::other(format!("prefs returned {code}")));
+        }
+        serde_json::from_slice(&body).map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    pub async fn advertise_exit_node(&self) -> io::Result<()> {
+        self.advertise_routes(&["0.0.0.0/0", "::/0"]).await
+    }
+
+    pub async fn stop_advertising_exit_node(&self) -> io::Result<()> {
+        self.advertise_routes(&[]).await
+    }
+
+    pub async fn advertise_routes(&self, routes: &[&str]) -> io::Result<()> {
+        let routes_json: Vec<String> = routes.iter().map(|r| format!("\"{r}\"")).collect();
+        let body = format!(
+            "{{\"AdvertiseRoutes\":[{}]}}",
+            routes_json.join(",")
+        );
+        let (code, resp) = self.post_body("/localapi/v0/prefs", body.as_bytes()).await?;
+        if code != 200 {
+            return Err(io::Error::other(
+                format!("prefs returned {code}: {}", String::from_utf8_lossy(&resp)),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn use_exit_node(&self, ip: &str) -> io::Result<()> {
+        let (code, resp) = self.post(
+            &format!("/localapi/v0/set-use-exit-node-enabled?enabled=true&exit_node_ip={ip}")
+        ).await?;
+        if code != 200 {
+            return Err(io::Error::other(
+                format!("set-use-exit-node returned {code}: {}", String::from_utf8_lossy(&resp)),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn stop_using_exit_node(&self) -> io::Result<()> {
+        let (code, resp) = self.post("/localapi/v0/set-use-exit-node-enabled?enabled=false").await?;
+        if code != 200 {
+            return Err(io::Error::other(
+                format!("set-use-exit-node returned {code}: {}", String::from_utf8_lossy(&resp)),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn cert(&self, domain: &str) -> io::Result<Vec<u8>> {

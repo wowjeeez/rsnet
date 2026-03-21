@@ -10,6 +10,8 @@ pub use glue::tls::{TlsListener, tls_config_from_pem};
 pub use glue::server::RawTsTcpServer;
 
 #[cfg(feature = "localapi-serde-json")]
-pub use glue::localapi::{
-    PeerStatus, Status, TailnetStatus, UserProfile, WhoIsResponse,
+pub use glue::types::{
+    AppConnectorPrefs, AutoUpdatePrefs, ClientVersion, ExitNodeStatus,
+    Location, Node, PeerStatus, Prefs, Status, TailnetStatus,
+    UserProfile, WhoIsResponse,
 };
