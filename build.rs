@@ -12,10 +12,8 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
 
-    let lib_ext = if target_os == "windows" { "lib" } else { "a" };
-
     // check for prebuilt vendored archive (CI / crates.io path)
-    let vendored_archive = platform_dir.join(format!("libtailscale.{lib_ext}"));
+    let vendored_archive = platform_dir.join("libtailscale.a");
     let vendored_bindings = platform_dir.join("libtailscale.rs");
 
     if vendored_archive.exists() && vendored_bindings.exists() {
@@ -31,7 +29,7 @@ fn main() {
     // dev path: build from go source
     println!("cargo:rerun-if-changed={}", libtailscale_dir.display());
 
-    let archive = libtailscale_dir.join(format!("libtailscale.{lib_ext}"));
+    let archive = libtailscale_dir.join("libtailscale.a");
     let status = std::process::Command::new("go")
         .args(["build", "-buildmode=c-archive", "-o"])
         .arg(&archive)
@@ -59,23 +57,10 @@ fn main() {
 }
 
 fn link_system_libs(target_os: &str) {
-    match target_os {
-        "macos" => {
-            println!("cargo:rustc-link-lib=framework=CoreFoundation");
-            println!("cargo:rustc-link-lib=framework=Security");
-            println!("cargo:rustc-link-lib=framework=IOKit");
-            println!("cargo:rustc-link-lib=resolv");
-        }
-        "windows" => {
-            println!("cargo:rustc-link-lib=ws2_32");
-            println!("cargo:rustc-link-lib=iphlpapi");
-            println!("cargo:rustc-link-lib=ole32");
-            println!("cargo:rustc-link-lib=userenv");
-            println!("cargo:rustc-link-lib=ntdll");
-        }
-        _ => {
-            // linux and others
-            println!("cargo:rustc-link-lib=resolv");
-        }
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        println!("cargo:rustc-link-lib=framework=Security");
+        println!("cargo:rustc-link-lib=framework=IOKit");
     }
+    println!("cargo:rustc-link-lib=resolv");
 }

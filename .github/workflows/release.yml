@@ -11,6 +11,7 @@ env:
 jobs:
   vendor:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -22,11 +23,8 @@ jobs:
           - os: macos-latest
             goos: darwin
             goarch: arm64
-          - os: macos-13
+          - os: macos-latest
             goos: darwin
-            goarch: amd64
-          - os: windows-latest
-            goos: windows
             goarch: amd64
     runs-on: ${{ matrix.os }}
     steps:
@@ -39,17 +37,15 @@ jobs:
           go-version: '1.23'
           cache-dependency-path: libtailscale/go.sum
 
-      - name: build vendored archive (unix)
-        if: runner.os != 'Windows'
+      - name: build vendored archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
         run: |
+          mkdir -p vendored/${{ matrix.goos }}-${{ matrix.goarch }}
           cd libtailscale
           go build -buildmode=c-archive -o ../vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.a .
-
-      - name: build vendored archive (windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd libtailscale
-          go build -buildmode=c-archive -o ../vendored/${{ matrix.goos }}-${{ matrix.goarch }}/libtailscale.lib .
 
       - name: install bindgen-cli
         run: cargo install bindgen-cli
@@ -73,9 +69,6 @@ jobs:
           - os: macos-latest
             goos: darwin
             goarch: arm64
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -101,21 +94,25 @@ jobs:
         with:
           submodules: recursive
 
-      - name: download all vendored artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          pattern: vendored-*
+          name: vendored-linux-amd64
+          path: vendored/linux-amd64/
 
-      - name: organize vendored artifacts
-        run: |
-          mkdir -p vendored
-          for dir in vendored-*/; do
-            platform="${dir#vendored-}"
-            platform="${platform%/}"
-            mv "$dir" "vendored/$platform"
-          done
-          echo "vendored contents:"
-          find vendored -type f
+      - uses: actions/download-artifact@v4
+        with:
+          name: vendored-linux-arm64
+          path: vendored/linux-arm64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vendored-darwin-arm64
+          path: vendored/darwin-arm64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vendored-darwin-amd64
+          path: vendored/darwin-amd64/
 
       - name: verify all platforms
         run: |
@@ -123,9 +120,8 @@ jobs:
             test -f "vendored/$p/libtailscale.a" || { echo "missing $p archive"; exit 1; }
             test -f "vendored/$p/libtailscale.rs" || { echo "missing $p bindings"; exit 1; }
           done
-          test -f "vendored/windows-amd64/libtailscale.lib" || { echo "missing windows archive"; exit 1; }
-          test -f "vendored/windows-amd64/libtailscale.rs" || { echo "missing windows bindings"; exit 1; }
           echo "all platforms verified"
+          find vendored -type f -ls
 
       - name: publish to crates.io
         env:
@@ -143,5 +139,4 @@ jobs:
             vendored/linux-amd64/libtailscale.a#libtailscale-linux-amd64.a \
             vendored/linux-arm64/libtailscale.a#libtailscale-linux-arm64.a \
             vendored/darwin-arm64/libtailscale.a#libtailscale-darwin-arm64.a \
-            vendored/darwin-amd64/libtailscale.a#libtailscale-darwin-amd64.a \
-            vendored/windows-amd64/libtailscale.lib#libtailscale-windows-amd64.lib
+            vendored/darwin-amd64/libtailscale.a#libtailscale-darwin-amd64.a
