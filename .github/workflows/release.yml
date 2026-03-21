@@ -57,7 +57,14 @@ jobs:
           cd libtailscale
           go build -buildmode=c-archive -o "../$OUT/libtailscale.a" .
           # compile the C wrapper and merge into the archive
-          cc -c -I. tailscale.c -o "../$OUT/tailscale_c.o"
+          CC_FLAGS="-c -I. tailscale.c -o ../$OUT/tailscale_c.o"
+          if [ "${{ matrix.goos }}" = "darwin" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
+            cc -target x86_64-apple-darwin $CC_FLAGS
+          elif [ "${{ matrix.goos }}" = "darwin" ] && [ "${{ matrix.goarch }}" = "arm64" ]; then
+            cc -target aarch64-apple-darwin $CC_FLAGS
+          else
+            cc $CC_FLAGS
+          fi
           ar rcs "../$OUT/libtailscale.a" "../$OUT/tailscale_c.o"
           rm "../$OUT/tailscale_c.o"
 
