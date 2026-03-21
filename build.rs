@@ -18,12 +18,15 @@ fn go_arch(rust_arch: &str) -> &str {
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let libtailscale_dir = manifest_dir.join("libtailscale");
     let vendored_dir = manifest_dir.join("vendored");
 
     let rust_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let rust_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let platform_dir = vendored_dir.join(format!("{}-{}", go_os(&rust_os), go_arch(&rust_arch)));
+
+    let bindings_out = out_dir.join("libtailscale.rs");
 
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -36,8 +39,7 @@ fn main() {
         println!("cargo:rustc-link-lib=static=tailscale");
         link_system_libs(&rust_os);
 
-        let out_path = manifest_dir.join("src/vendor/libtailscale.rs");
-        std::fs::copy(&vendored_bindings, &out_path).expect("failed to copy vendored bindings");
+        std::fs::copy(&vendored_bindings, &bindings_out).expect("failed to copy vendored bindings");
         return;
     }
 
@@ -67,8 +69,7 @@ fn main() {
         .generate()
         .expect("unable to generate bindings");
 
-    let out_path = manifest_dir.join("src/vendor/libtailscale.rs");
-    bindings.write_to_file(&out_path).expect("couldn't write bindings");
+    bindings.write_to_file(&bindings_out).expect("couldn't write bindings");
 }
 
 fn link_system_libs(target_os: &str) {
