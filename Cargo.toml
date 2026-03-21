@@ -13,7 +13,6 @@ include = [
     "src/**/*",
     "build.rs",
     "Cargo.toml",
-    "vendored/**/*",
     "libtailscale/tailscale.h",
     "LICENSE",
     "README.md",

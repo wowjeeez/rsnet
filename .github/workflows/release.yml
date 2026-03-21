@@ -105,22 +105,12 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-features -- -D warnings
 
-  publish:
+  # create github release FIRST so download URLs exist for cargo publish
+  release:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-cargo-publish-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ubuntu-cargo-publish-
 
       - uses: actions/download-artifact@v4
         with:
@@ -142,19 +132,6 @@ jobs:
           name: vendored-darwin-amd64
           path: vendored/darwin-amd64/
 
-      - name: verify all platforms
-        run: |
-          for p in linux-amd64 linux-arm64 darwin-arm64 darwin-amd64; do
-            test -f "vendored/$p/libtailscale.a" || { echo "missing $p archive"; exit 1; }
-            test -f "vendored/$p/libtailscale.rs" || { echo "missing $p bindings"; exit 1; }
-          done
-          echo "all platforms verified"
-
-      - name: publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --allow-dirty
-
       - name: create github release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -167,6 +144,28 @@ jobs:
             vendored/linux-arm64/libtailscale.a#libtailscale-linux-arm64.a \
             vendored/darwin-arm64/libtailscale.a#libtailscale-darwin-arm64.a \
             vendored/darwin-amd64/libtailscale.a#libtailscale-darwin-amd64.a
+
+  # publish to crates.io AFTER release exists (build.rs downloads .a from release)
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ubuntu-cargo-publish-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ubuntu-cargo-publish-
+
+      - name: publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
 
   docs:
     needs: vendor
