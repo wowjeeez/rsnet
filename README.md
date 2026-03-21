@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="rsnet" width="200">
+</p>
+
 # rsnet
 
 Rust bindings for Tailscale's [libtailscale](https://github.com/tailscale/libtailscale) C library. Embed a Tailscale node directly into your Rust process — get an IP on your tailnet entirely from userspace, no system daemon required.

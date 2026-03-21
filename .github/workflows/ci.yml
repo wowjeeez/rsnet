@@ -44,7 +44,3 @@ jobs:
 
       - name: check no-default-features
         run: cargo check --no-default-features
-
-      - name: cargo doc
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo doc --all-features --no-deps

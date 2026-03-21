@@ -20,8 +20,16 @@ fn go_arch(rust_arch: &str) -> &str {
 }
 
 fn main() {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    // docs.rs can't run go or download archives — emit stubs so docs compile
+    if env::var("DOCS_RS").is_ok() {
+        let bindings_out = out_dir.join("libtailscale.rs");
+        std::fs::write(&bindings_out, STUB_BINDINGS).expect("failed to write stub bindings");
+        return;
+    }
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let libtailscale_dir = manifest_dir.join("libtailscale");
     let vendored_dir = manifest_dir.join("vendored");
 
@@ -129,6 +137,31 @@ fn try_download(url: &str, dest: &PathBuf) -> bool {
         }
     }
 }
+
+// minimal stubs so rustdoc can compile without the real .a
+const STUB_BINDINGS: &str = r#"
+pub type tailscale = ::std::os::raw::c_int;
+pub type tailscale_conn = ::std::os::raw::c_int;
+pub type tailscale_listener = ::std::os::raw::c_int;
+unsafe extern "C" { pub fn tailscale_new() -> tailscale; }
+unsafe extern "C" { pub fn tailscale_start(sd: tailscale) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_up(sd: tailscale) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_close(sd: tailscale) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_dir(sd: tailscale, dir: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_hostname(sd: tailscale, hostname: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_authkey(sd: tailscale, authkey: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_control_url(sd: tailscale, control_url: *const ::std::os::raw::c_char) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_ephemeral(sd: tailscale, ephemeral: ::std::os::raw::c_int) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_set_logfd(sd: tailscale, fd: ::std::os::raw::c_int) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_getips(sd: tailscale, buf: *mut ::std::os::raw::c_char, buflen: usize) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_dial(sd: tailscale, network: *const ::std::os::raw::c_char, addr: *const ::std::os::raw::c_char, conn_out: *mut tailscale_conn) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_listen(sd: tailscale, network: *const ::std::os::raw::c_char, addr: *const ::std::os::raw::c_char, listener_out: *mut tailscale_listener) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_accept(listener: tailscale_listener, conn_out: *mut tailscale_conn) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_loopback(sd: tailscale, addr_out: *mut ::std::os::raw::c_char, addrlen: usize, proxy_cred_out: *mut ::std::os::raw::c_char, local_api_cred_out: *mut ::std::os::raw::c_char) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_enable_funnel_to_localhost_plaintext_http1(sd: tailscale, localhostPort: ::std::os::raw::c_int) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_errmsg(sd: tailscale, buf: *mut ::std::os::raw::c_char, buflen: usize) -> ::std::os::raw::c_int; }
+unsafe extern "C" { pub fn tailscale_getremoteaddr(l: tailscale_listener, conn: tailscale_conn, buf: *mut ::std::os::raw::c_char, buflen: usize) -> ::std::os::raw::c_int; }
+"#;
 
 fn link_system_libs(target_os: &str) {
     if target_os == "macos" {

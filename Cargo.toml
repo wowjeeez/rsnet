@@ -57,3 +57,4 @@ bindgen = "0.71.0"
 
 [package.metadata.docs.rs]
 all-features = true
+rustc-args = ["--cfg", "docsrs"]
